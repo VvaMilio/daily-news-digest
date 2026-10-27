@@ -1,10 +1,12 @@
 import html
 import os
 import re
+import smtplib
 from datetime import datetime
+from email.message import EmailMessage
+from email.utils import formataddr
 from zoneinfo import ZoneInfo
 
-import requests
 from openai import OpenAI
 
 
@@ -53,25 +55,24 @@ def main() -> None:
     digest = response.output_text.strip()
 
     to_address = os.environ["NEWS_TO"]
-    from_address = os.environ["NEWS_FROM"]
+    gmail_address = os.environ["GMAIL_ADDRESS"]
+    gmail_app_password = os.environ["GMAIL_APP_PASSWORD"]
     subject = f"全球热点新闻摘要｜{date_label}"
 
-    result = requests.post(
-        "https://api.resend.com/emails",
-        headers={
-            "Authorization": f"Bearer {os.environ['RESEND_API_KEY']}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "from": from_address,
-            "to": [to_address],
-            "subject": subject,
-            "text": digest,
-            "html": as_html(digest),
-        },
-        timeout=30,
-    )
-    result.raise_for_status()
+    message = EmailMessage()
+    message["From"] = formataddr(("每日新闻摘要", gmail_address))
+    message["To"] = to_address
+    message["Subject"] = subject
+    message.set_content(digest)
+    message.add_alternative(as_html(digest), subtype="html")
+
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+        smtp.ehlo()
+        smtp.starttls()
+        smtp.ehlo()
+        smtp.login(gmail_address, gmail_app_password)
+        smtp.send_message(message)
+
     print(f"Sent {subject} to {to_address}")
 
 
