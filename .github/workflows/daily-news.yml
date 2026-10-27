@@ -29,3 +29,4 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NEWS_TO: ${{ secrets.NEWS_TO }}
           NEWS_FROM: ${{ secrets.NEWS_FROM }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
