@@ -25,7 +25,7 @@ def as_html(text: str) -> str:
 def main() -> None:
     now = datetime.now(TIMEZONE)
     date_label = now.strftime("%Y-%m-%d")
-    model = os.getenv("OPENAI_MODEL", "gpt-5.5")
+    model = os.getenv("OPENAI_MODEL") or "gpt-6-astra"
 
     prompt = f"""
 你是新闻编辑。请检索 {date_label}（北京时间）前 24 小时内的全球综合热点新闻，
@@ -39,7 +39,11 @@ def main() -> None:
 - 直接输出纯文本，保留完整 URL，方便邮件客户端识别为链接。
 """
 
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    client_options = {"api_key": os.environ["OPENAI_API_KEY"]}
+    base_url = os.getenv("OPENAI_BASE_URL")
+    if base_url:
+        client_options["base_url"] = base_url.rstrip("/")
+    client = OpenAI(**client_options)
     response = client.responses.create(
         model=model,
         tools=[{"type": "web_search"}],
