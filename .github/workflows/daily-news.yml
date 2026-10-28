@@ -1,14 +1,16 @@
-name: Daily global news digest
+name: Daily news and GitHub digest
 
 on:
   schedule:
-    - cron: "0 12 * * *"
+    - cron: "0 8 * * *"
       timezone: "Asia/Shanghai"
   workflow_dispatch:
 
 jobs:
   digest:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -30,3 +32,4 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           NEWS_TO: ${{ secrets.NEWS_TO }}
+          GITHUB_TOKEN: ${{ github.token }}
