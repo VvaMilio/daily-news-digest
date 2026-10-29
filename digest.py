@@ -1,10 +1,13 @@
 import html
+import json
 import os
 import re
 import smtplib
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from email.message import EmailMessage
 from email.utils import formataddr
+from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
 import requests
@@ -13,6 +16,7 @@ from openai import OpenAI
 
 TIMEZONE = ZoneInfo("Asia/Shanghai")
 GITHUB_API = "https://api.github.com/search/repositories"
+GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
 
 
 def as_html(text: str) -> str:
@@ -40,22 +44,111 @@ def build_openai_client() -> OpenAI:
     return OpenAI(**options)
 
 
-def generate_news_digest(client: OpenAI, model: str, date_label: str) -> str:
+def strip_html(value: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", value))).strip()
+
+
+def fetch_news_feed(query: str) -> list[dict[str, str]]:
+    response = requests.get(
+        GOOGLE_NEWS_RSS,
+        params={
+            "q": f"{query} when:1d",
+            "hl": "en-US",
+            "gl": "US",
+            "ceid": "US:en",
+        },
+        headers={"User-Agent": "daily-news-digest/1.0"},
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    root = ElementTree.fromstring(response.content)
+    items = []
+    for node in root.findall("./channel/item"):
+        title = strip_html(node.findtext("title", default=""))
+        link = (node.findtext("link", default="") or "").strip()
+        if not title or not link:
+            continue
+
+        published = node.findtext("pubDate", default="")
+        try:
+            published_dt = parsedate_to_datetime(published)
+            published = published_dt.astimezone(TIMEZONE).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OverflowError):
+            published = "时间未提供"
+
+        source = strip_html(node.findtext("source", default=""))
+        if not source:
+            source = title.rsplit(" - ", 1)[-1] if " - " in title else "来源未标注"
+        items.append(
+            {
+                "title": title,
+                "source": source,
+                "published": published,
+                "snippet": strip_html(node.findtext("description", default=""))[:700],
+                "url": link,
+            }
+        )
+    return items
+
+
+def collect_news() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    general = []
+    for query in ("world", "global economy", "international politics"):
+        general.extend(fetch_news_feed(query))
+
+    ai = []
+    for query in (
+        '"artificial intelligence"',
+        "generative AI OR machine learning",
+    ):
+        ai.extend(fetch_news_feed(query))
+
+    def deduplicate(items: list[dict[str, str]]) -> list[dict[str, str]]:
+        unique = []
+        seen = set()
+        for item in items:
+            key = re.sub(r"[^a-z0-9]+", "", item["title"].lower())
+            if key and key not in seen:
+                seen.add(key)
+                unique.append(item)
+        return unique[:30]
+
+    general, ai = deduplicate(general), deduplicate(ai)
+    if not general or not ai:
+        raise RuntimeError(
+            f"News RSS feeds returned insufficient results (global={len(general)}, AI={len(ai)})."
+        )
+    return general, ai
+
+
+def news_lines(items: list[dict[str, str]]) -> str:
+    return json.dumps(items, ensure_ascii=False, indent=2)
+
+
+def generate_news_digest(
+    client: OpenAI,
+    model: str,
+    date_label: str,
+    general: list[dict[str, str]],
+    ai: list[dict[str, str]],
+) -> str:
     prompt = f"""
-你是新闻编辑。请检索 {date_label}（北京时间）前 24 小时内的新闻，生成一封中文日报。
+你是新闻编辑。请根据下面由新闻 RSS 源提供的候选内容，生成 {date_label}（北京时间）的中文日报。
 
 第一部分必须是“全球综合热点”，列出 5 条最重要的全球新闻；第二部分必须是“AI 热点”，列出 5 条与人工智能直接相关的新闻。
-每条包含：标题、两三句事实摘要、影响或背景、来源名称和完整 URL。
-优先使用可靠的一手或主流媒体来源，不要编造事实或网址。两部分的新闻尽量互不重复。
-如果当天没有足够重大的新闻，也要说明原因，但仍尽量给出可核实的更新。
+每条包含：标题、简短事实摘要、来源名称、发布时间和候选数据中对应的完整 URL。
+只能使用候选数据中实际提供的事实、来源和 URL；不要补充猜测、外部信息或编造细节。优先选择重要且来源较可靠的不同事件，两部分不要重复。
+如果某一部分候选不足 5 条，列出能核实的条目，并简短说明当天没有足够重大更新；不要为了凑数编造新闻。
 直接输出纯文本，保留完整 URL，方便邮件客户端识别为链接。
+
+全球综合新闻候选：
+{news_lines(general)}
+
+AI 新闻候选：
+{news_lines(ai)}
 """
-    response = client.responses.create(
-        model=model,
-        tools=[{"type": "web_search"}],
-        tool_choice="required",
-        input=prompt,
-    )
+    response = client.responses.create(model=model, input=prompt)
     return response.output_text.strip()
 
 
@@ -195,7 +288,8 @@ def main() -> None:
     gmail_app_password = os.environ["GMAIL_APP_PASSWORD"]
 
     client = build_openai_client()
-    news_digest = generate_news_digest(client, model, date_label)
+    general_news, ai_news = collect_news()
+    news_digest = generate_news_digest(client, model, date_label, general_news, ai_news)
     popular_projects, ai_projects = collect_github_projects()
     github_digest = generate_github_digest(
         client, model, date_label, popular_projects, ai_projects
